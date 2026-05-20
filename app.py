@@ -40,14 +40,33 @@ def log(msg):
 
 
 def detectar_sentido(unidad, recorrido, lat, lon):
-    """Determina si el bus va en sentido IDA."""
+    """
+    Determina sentido usando vector de movimiento real (prioridad).
+    Fallback al campo recorrido solo si no hay historial suficiente.
+    """
+    historial = HISTORIAL_POSICIONES.get(unidad, [])
+
+    # Si tenemos al menos 2 posiciones anteriores, calcular tendencia
+    if len(historial) >= 2:
+        ultimas_lons = [h["lon"] for h in historial[-3:]]
+        ultimas_lons.append(lon)
+
+        # Contar cuantas veces la longitud disminuyo (movimiento hacia Oeste = IDA)
+        disminuciones = sum(1 for i in range(1, len(ultimas_lons)) if ultimas_lons[i] < ultimas_lons[i-1])
+        aumentos = sum(1 for i in range(1, len(ultimas_lons)) if ultimas_lons[i] > ultimas_lons[i-1])
+
+        # Si la mayoria de los movimientos son hacia el Oeste -> IDA
+        if disminuciones > aumentos:
+            return "IDA"
+        # Si la mayoria son hacia el Este -> VUELTA
+        elif aumentos > disminuciones:
+            return "VUELTA"
+
+    # Fallback: usar el campo recorrido si no hay tendencia clara
     if recorrido and "(I)" in recorrido:
         return "IDA"
-
-    if unidad in HISTORIAL_POSICIONES:
-        lon_anterior = HISTORIAL_POSICIONES[unidad]["lon"]
-        if lon < lon_anterior:
-            return "IDA"
+    if recorrido and "(V)" in recorrido:
+        return "VUELTA"
 
     return "DESCONOCIDO"
 
@@ -124,10 +143,19 @@ def ciclo_monitoreo():
         except (ValueError, TypeError):
             continue
 
+        # Actualizar historial ANTES del filtro (todos los buses acumulan posiciones)
+        if unidad not in HISTORIAL_POSICIONES:
+            HISTORIAL_POSICIONES[unidad] = []
+        HISTORIAL_POSICIONES[unidad].append({"lat": lat, "lon": lon})
+        if len(HISTORIAL_POSICIONES[unidad]) > 3:
+            HISTORIAL_POSICIONES[unidad].pop(0)
+
         # La API ya filtra por linea 187, no hace falta filtrar aqui
 
         # Detectar sentido
         sentido = detectar_sentido(unidad, recorrido, lat, lon)
+        metodo = "VECTOR" if len(HISTORIAL_POSICIONES.get(unidad, [])) >= 2 else "RECORRIDO"
+        log(f"  Unidad {unidad}: sentido={sentido} (por {metodo}) lon={lon:.5f}")
         if sentido != "IDA":
             continue
 
@@ -154,9 +182,6 @@ def ciclo_monitoreo():
             "ultima_actualizacion": ahora,
         }
         buses_filtrados.append(info)
-
-        # Actualizar historial
-        HISTORIAL_POSICIONES[unidad] = {"lat": lat, "lon": lon}
 
         # Alerta visible en web si esta a <= 10 min y no se alerto antes
         clave_alerta = f"{unidad}_{ahora[:5]}"
